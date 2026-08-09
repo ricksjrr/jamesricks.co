@@ -40,9 +40,13 @@
 
   * { box-sizing: border-box; }
 
-  body {
-    margin: 0;
+  html {
     background-color: var(--bg);
+  }
+
+  body {
+    position: relative;
+    margin: 0;
     background-image: radial-gradient(var(--dot) 1px, transparent 1px);
     background-size: 22px 22px;
     background-position: -1px -1px;
@@ -52,11 +56,22 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  #dotCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 0;
+    pointer-events: none;
+    display: block;
+  }
+
   ::selection { background: var(--accent-soft); }
 
   a { color: inherit; }
 
   .shell {
+    position: relative;
+    z-index: 1;
     display: grid;
     grid-template-columns: 320px 1fr;
     min-height: 100vh;
@@ -136,8 +151,18 @@
     height: auto;
     border-radius: 12px;
     margin: 0 auto 24px;
-    animation: heroIn 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: photoIn 0.9s ease both;
     animation-delay: 0.12s;
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .sidebar-photo:hover {
+    transform: scale(1.03);
+  }
+
+  @keyframes photoIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
   @keyframes heroIn {
@@ -201,6 +226,7 @@
 
   nav.sidebar-nav a:hover {
     color: var(--accent);
+    font-weight: 600;
   }
 
   nav.sidebar-nav a:hover::before {
@@ -1010,6 +1036,8 @@
   </head>
   <body>
 
+<canvas id="dotCanvas" aria-hidden="true"></canvas>
+
 <noscript><style>.reveal { opacity: 1 !important; }</style></noscript>
 
 <button class="theme-toggle" id="themeToggle" type="button" aria-pressed="false" aria-label="Toggle dark mode">
@@ -1379,6 +1407,174 @@
         try { noise.stop(); } catch (e) {}
       }, 1100);
       lofi = null;
+    }
+  })();
+</script>
+
+<script>
+  (function () {
+    var supportsInteractiveDots = window.matchMedia('(hover: hover) and (pointer: fine)').matches
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (!supportsInteractiveDots) return;
+
+    var canvas = document.getElementById('dotCanvas');
+    if (!canvas || !canvas.getContext) return;
+    var ctx = canvas.getContext('2d');
+
+    var SPACING = 22;
+    var OFFSET = -1;
+    var REPEL_RADIUS = 70;
+    var MAX_DISPLACEMENT = 10;
+    var EASE = 0.18;
+    var IDLE_TIMEOUT = 300;
+
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var docWidth = 0, docHeight = 0;
+    var mouseX = -9999, mouseY = -9999;
+    var lastMoveTime = 0;
+    var active = new Map();
+    var rafId = null;
+    var dotColor = '#cccccc';
+
+    function readDotColor() {
+      dotColor = getComputedStyle(document.body).getPropertyValue('--dot').trim() || dotColor;
+    }
+
+    function resize() {
+      docWidth = document.documentElement.scrollWidth;
+      docHeight = document.documentElement.scrollHeight;
+      canvas.style.width = docWidth + 'px';
+      canvas.style.height = docHeight + 'px';
+      canvas.width = Math.round(docWidth * dpr);
+      canvas.height = Math.round(docHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      draw();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, docWidth, docHeight);
+      ctx.fillStyle = dotColor;
+
+      var margin = 60;
+      var viewTop = Math.max(0, window.scrollY - margin);
+      var viewBottom = Math.min(docHeight, window.scrollY + window.innerHeight + margin);
+      var viewLeft = Math.max(0, window.scrollX - margin);
+      var viewRight = Math.min(docWidth, window.scrollX + window.innerWidth + margin);
+
+      var colStart = Math.floor((viewLeft - OFFSET) / SPACING);
+      var colEnd = Math.ceil((viewRight - OFFSET) / SPACING);
+      var rowStart = Math.floor((viewTop - OFFSET) / SPACING);
+      var rowEnd = Math.ceil((viewBottom - OFFSET) / SPACING);
+
+      ctx.beginPath();
+      for (var row = rowStart; row <= rowEnd; row++) {
+        for (var col = colStart; col <= colEnd; col++) {
+          var homeX = OFFSET + col * SPACING;
+          var homeY = OFFSET + row * SPACING;
+          var key = col + ',' + row;
+          var d = active.get(key);
+          var x = homeX, y = homeY;
+          if (d) {
+            x = homeX + d.dx;
+            y = homeY + d.dy;
+          }
+          ctx.moveTo(x + 1, y);
+          ctx.arc(x, y, 1, 0, Math.PI * 2);
+        }
+      }
+      ctx.fill();
+    }
+
+    function updatePhysics() {
+      var stillActive = false;
+      active.forEach(function (d, key) {
+        var targetDx = d.targetDx || 0;
+        var targetDy = d.targetDy || 0;
+        d.dx += (targetDx - d.dx) * EASE;
+        d.dy += (targetDy - d.dy) * EASE;
+        if (Math.abs(d.dx) > 0.05 || Math.abs(d.dy) > 0.05 || Math.abs(targetDx) > 0.05 || Math.abs(targetDy) > 0.05) {
+          stillActive = true;
+        } else {
+          active.delete(key);
+        }
+      });
+      return stillActive;
+    }
+
+    function loop() {
+      var stillActive = updatePhysics();
+      draw();
+      if (stillActive || Date.now() - lastMoveTime < IDLE_TIMEOUT) {
+        rafId = requestAnimationFrame(loop);
+      } else {
+        rafId = null;
+      }
+    }
+
+    function ensureLoop() {
+      if (!rafId) {
+        rafId = requestAnimationFrame(loop);
+      }
+    }
+
+    function handleMouseMove(e) {
+      mouseX = e.pageX;
+      mouseY = e.pageY;
+      lastMoveTime = Date.now();
+
+      var colMin = Math.floor((mouseX - REPEL_RADIUS - OFFSET) / SPACING);
+      var colMax = Math.ceil((mouseX + REPEL_RADIUS - OFFSET) / SPACING);
+      var rowMin = Math.floor((mouseY - REPEL_RADIUS - OFFSET) / SPACING);
+      var rowMax = Math.ceil((mouseY + REPEL_RADIUS - OFFSET) / SPACING);
+
+      for (var row = rowMin; row <= rowMax; row++) {
+        for (var col = colMin; col <= colMax; col++) {
+          var homeX = OFFSET + col * SPACING;
+          var homeY = OFFSET + row * SPACING;
+          var distX = homeX - mouseX;
+          var distY = homeY - mouseY;
+          var dist = Math.sqrt(distX * distX + distY * distY);
+          if (dist < REPEL_RADIUS && dist > 0.01) {
+            var strength = (1 - dist / REPEL_RADIUS) * MAX_DISPLACEMENT;
+            var key = col + ',' + row;
+            var d = active.get(key);
+            if (!d) {
+              d = { dx: 0, dy: 0 };
+              active.set(key, d);
+            }
+            d.targetDx = (distX / dist) * strength;
+            d.targetDy = (distY / dist) * strength;
+          }
+        }
+      }
+      ensureLoop();
+    }
+
+    function handleMouseLeave() {
+      active.forEach(function (d) {
+        d.targetDx = 0;
+        d.targetDy = 0;
+      });
+      ensureLoop();
+    }
+
+    readDotColor();
+    resize();
+
+    document.body.style.backgroundImage = 'none';
+
+    window.addEventListener('resize', resize, { passive: true });
+    window.addEventListener('scroll', draw, { passive: true });
+    document.addEventListener('mousemove', handleMouseMove, { passive: true });
+    document.addEventListener('mouseleave', handleMouseLeave, { passive: true });
+
+    var themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+      themeToggle.addEventListener('click', function () {
+        readDotColor();
+        draw();
+      });
     }
   })();
 </script>
